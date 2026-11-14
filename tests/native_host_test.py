@@ -1,0 +1,125 @@
+import json
+import os
+from pathlib import Path
+import selectors
+import shutil
+import struct
+import subprocess
+import sys
+import tempfile
+import unittest
+
+ORIGIN = 'chrome-extension://' + 'a' * 32 + '/'
+FAKE = r'''
+import json, pathlib, signal, sys, time
+args=sys.argv[1:]
+if '--version' in args:
+    print('test-version'); sys.exit(0)
+assert '--ignore-config' in args and '--no-playlist' in args
+if '--dump-single-json' in args:
+    print(json.dumps({'id':'q6fgVVmdpgY','title':'Test video','duration':20,'formats':[{'format_id':'18','height':360,'vcodec':'avc1','acodec':'aac','filesize':2048,'url':'secret-url'}]})); sys.exit(0)
+if args[-1].endswith('slowtest001'):
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+print('FRAME_PROGRESS:'+json.dumps({'formatId':'137','downloaded':1024,'total':2048}),flush=True)
+if args[-1].endswith('slowtest001'):
+    time.sleep(30)
+path=pathlib.Path(args[args.index('--output')+1].replace('%(ext)s','mp4'))
+path.write_bytes(b'x'*2048)
+print('FRAME_FILE:'+json.dumps(str(path)),flush=True)
+'''
+
+
+class NativeHostTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+        self.downloads = self.root / 'Downloads'
+        self.downloads.mkdir()
+        shutil.copy2('native/frame_host.py', self.root / 'frame_host.py')
+        (self.root / 'config.json').write_text(json.dumps({'allowedOrigins': [ORIGIN], 'downloadDir': str(self.downloads)}))
+        binary = self.root / 'bin'; binary.mkdir()
+        for name in ('yt-dlp', 'ffmpeg', 'deno'):
+            file = binary / name
+            file.write_text('#!' + sys.executable + '\n' + FAKE)
+            file.chmod(0o755)
+        self.env = dict(os.environ, PATH=str(binary) + ':' + os.environ.get('PATH', ''))
+        self.hosts = []
+
+    def tearDown(self):
+        for host in self.hosts:
+            if host.poll() is None:
+                host.stdin.close(); host.wait(timeout=6)
+            else:
+                host.stdin.close()
+            host.stdout.close(); host.stderr.close()
+        self.temp.cleanup()
+
+    def start(self, origin=ORIGIN):
+        host = subprocess.Popen([sys.executable, str(self.root / 'frame_host.py'), origin], stdin=subprocess.PIPE,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=self.env, bufsize=0)
+        self.hosts.append(host)
+        return host
+
+    def send(self, host, message):
+        body = json.dumps(message).encode()
+        host.stdin.write(struct.pack('<I', len(body)) + body); host.stdin.flush()
+
+    def receive(self, host):
+        with selectors.DefaultSelector() as selector:
+            selector.register(host.stdout, selectors.EVENT_READ)
+            self.assertTrue(selector.select(timeout=8), 'Native host timed out')
+        header = host.stdout.read(4)
+        self.assertEqual(len(header), 4)
+        length = struct.unpack('<I', header)[0]
+        data = bytearray()
+        while len(data) < length:
+            chunk = host.stdout.read(length - len(data))
+            self.assertTrue(chunk)
+            data.extend(chunk)
+        return json.loads(data)
+
+    def terminal(self, host):
+        while True:
+            result = self.receive(host)
+            if result['type'] != 'progress':
+                return result
+
+    def test_info_strips_urls(self):
+        host = self.start()
+        self.send(host, {'action': 'info', 'url': 'https://www.youtube.com/watch?v=q6fgVVmdpgY'})
+        result = self.terminal(host)
+        self.assertEqual(result['type'], 'result')
+        self.assertEqual(result['result']['formats'][0]['height'], 360)
+        self.assertNotIn('secret-url', json.dumps(result))
+
+    def test_two_downloads_never_overwrite_each_other(self):
+        hosts = [self.start(), self.start()]
+        for host in hosts:
+            self.send(host, {'action': 'download', 'url': 'https://youtu.be/q6fgVVmdpgY', 'formatId': '137+140', 'filename': '../movie.mp4', 'saveAs': False})
+        results = [self.terminal(host) for host in hosts]
+        self.assertTrue(all(r['type'] == 'result' for r in results), results)
+        self.assertNotEqual(results[0]['result']['filename'], results[1]['result']['filename'])
+        self.assertEqual(sorted(p.stat().st_size for p in self.downloads.iterdir()), [2048, 2048])
+        self.assertEqual(len(json.loads((self.root / 'downloads.json').read_text())), 2)
+
+    def test_cancel_kills_downloader_and_cleans_temporary_files(self):
+        host = self.start()
+        self.send(host, {'action': 'download', 'url': 'https://youtu.be/slowtest001', 'formatId': '137+140', 'filename': 'cancel.mp4', 'saveAs': False})
+        while True:
+            result = self.receive(host)
+            if result.get('update', {}).get('downloaded'):
+                break
+        self.send(host, {'action': 'cancel'})
+        self.assertEqual(self.terminal(host)['code'], 'CANCELED')
+        self.assertEqual(list(self.downloads.iterdir()), [])
+
+    def test_untrusted_urls_and_origins_are_rejected(self):
+        host = self.start()
+        self.send(host, {'action': 'info', 'url': 'https://youtube.com.evil.test/watch?v=q6fgVVmdpgY'})
+        self.assertEqual(self.terminal(host)['code'], 'INVALID_REQUEST')
+        other = self.start('chrome-extension://' + 'b' * 32 + '/')
+        self.assertEqual(other.wait(timeout=5), 1)
+
+
+if __name__ == '__main__':
+    unittest.main()

@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="ru">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Подключить YouTube — Frame</title><link rel="stylesheet" href="style.css"></head>
+<body class="manager">
+<main class="dashboard setup">
+  <header class="top"><a class="brand" href="popup.html"><span class="brand-icon">↓</span>frame<span class="brand-dot">.</span></a></header>
+  <h1>Подключить скачивание YouTube</h1>
+  <p>Для YouTube нужно один раз установить помощник Frame и зависимости на ваш компьютер. Для HLS и прямых видеофайлов помощник не нужен.</p>
+  <p class="muted">yt-dlp скачивает ролик, FFmpeg объединяет видео со звуком, Deno обрабатывает JavaScript плеера. Помощник запускается через Python 3.</p>
+  <div class="os-tabs" role="tablist" aria-label="Операционная система">
+    <button id="tab-macos" role="tab" aria-selected="true" aria-controls="os-macos" data-os="macos">macOS</button>
+    <button id="tab-linux" role="tab" aria-selected="false" aria-controls="os-linux" data-os="linux" tabindex="-1">Linux</button>
+    <button id="tab-windows" role="tab" aria-selected="false" aria-controls="os-windows" data-os="windows" tabindex="-1">Windows</button>
+  </div>
+  <section id="os-macos" role="tabpanel" aria-labelledby="tab-macos">
+    <h2>1. Установите зависимости</h2>
+    <p>В Терминале выполните команду <a href="https://brew.sh/" target="_blank" rel="noopener noreferrer">Homebrew</a>:</p>
+    <pre>brew install python yt-dlp ffmpeg deno</pre>
+    <h2>2. Подключите помощник</h2>
+    <p>В Терминале перейдите в папку проекта Frame — ту, в которой находится папка <code>native</code>, — и выполните:</p>
+    <pre data-command="macos"></pre><button class="secondary" data-copy="macos">Скопировать команду</button>
+    <p class="muted">При начале скачивания откроется диалог выбора файла. Установка помощника не требует sudo.</p>
+  </section>
+  <section id="os-linux" role="tabpanel" aria-labelledby="tab-linux" hidden>
+    <h2>1. Установите зависимости</h2>
+    <p>Для Ubuntu / Debian выполните:</p>
+    <pre>sudo apt update
+sudo apt install python3 pipx ffmpeg
+pipx install 'yt-dlp[default]'
+pipx ensurepath</pre>
+    <p>Установите Deno по <a href="https://docs.deno.com/runtime/getting_started/installation/" target="_blank" rel="noopener noreferrer">официальной инструкции</a>. Для других дистрибутивов установите Python 3, FFmpeg и pipx через свой пакетный менеджер, затем yt-dlp командой выше.</p>
+    <h2>2. Подключите помощник</h2>
+    <p>Откройте новый терминал в папке проекта Frame и выполните:</p>
+    <pre data-command="linux"></pre><button class="secondary" data-copy="linux">Скопировать команду</button>
+    <p class="muted">Файлы сохраняются в <code>~/Downloads</code>. Поддерживаются обычные установки Google Chrome и Chromium; Snap / Flatpak могут блокировать запуск помощника.</p>
+  </section>
+  <section id="os-windows" role="tabpanel" aria-labelledby="tab-windows" hidden>
+    <h2>1. Установите зависимости</h2>
+    <p>В PowerShell выполните команды <a href="https://learn.microsoft.com/windows/package-manager/winget/" target="_blank" rel="noopener noreferrer">WinGet</a>:</p>
+    <pre>winget install --id Python.Python.3.13 -e
+winget install --id yt-dlp.yt-dlp -e
+winget install --id Gyan.FFmpeg -e
+winget install --id DenoLand.Deno -e</pre>
+    <h2>2. Подключите помощник</h2>
+    <p>Откройте новое окно PowerShell в папке проекта Frame и выполните:</p>
+    <pre data-command="windows"></pre><button class="secondary" data-copy="windows">Скопировать команду</button>
+    <p class="muted">Помощник регистрируется для текущего пользователя. Файлы сохраняются в папку <code>Downloads</code> вашего профиля. Если браузер уже был открыт во время установки зависимостей, перезапустите его.</p>
+  </section>
+  <section class="helper-check" aria-labelledby="check-title">
+    <h2 id="check-title">3. Проверьте подключение</h2>
+    <p>После установки нажмите кнопку. Когда помощник подключится, вернитесь на страницу ролика и откройте Frame.</p>
+    <button id="check" class="primary">Проверить помощник</button>
+    <p id="status" class="helper-status" role="status" aria-live="polite"></p>
+  </section>
+  <p class="youtube-note">Для официального офлайн-просмотра рекомендуем <a href="https://www.youtube.com/premium" target="_blank" rel="noopener noreferrer">YouTube Premium</a>.</p>
+</main>
+<script type="module" src="setup.js"></script>
+</body>
+</html>
