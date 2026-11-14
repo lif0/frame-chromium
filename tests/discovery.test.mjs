@@ -33,7 +33,7 @@ test('observed access survives content discovery and hundreds of film segments w
     observe('api', 'https://cdn.example/movie/account', 'application/json', [{ name: 'Authorizations', value: 'unrelated-token' }]);
     await flush();
     assert.equal(records['tab:1'].length, 1);
-    assert.equal(titles.at(-1).title, 'Найдено видео: 1 — Frame');
+    assert.equal(titles.at(-1).title, 'Videos found: 1 — Frame');
     assert.ok(icons.at(-1).imageData);
     assert.equal(badges.at(-1).text, '');
     const video = records['tab:1'][0];

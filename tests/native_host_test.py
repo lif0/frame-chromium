@@ -1,4 +1,5 @@
 import json
+import importlib.util
 import os
 from pathlib import Path
 import selectors
@@ -7,6 +8,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 ORIGIN = 'chrome-extension://' + 'a' * 32 + '/'
@@ -17,7 +19,13 @@ if '--version' in args:
     print('test-version'); sys.exit(0)
 assert '--ignore-config' in args and '--no-playlist' in args
 if '--dump-single-json' in args:
+    with (pathlib.Path(__file__).parent.parent/'extractions.log').open('a') as log: log.write('extract\n')
     print(json.dumps({'id':'q6fgVVmdpgY','title':'Test video','duration':20,'formats':[{'format_id':'18','height':360,'vcodec':'avc1','acodec':'aac','filesize':2048,'url':'secret-url'}]})); sys.exit(0)
+if '--load-info-json' in args:
+    data=json.loads(pathlib.Path(args[args.index('--load-info-json')+1]).read_text())
+    assert data['id']=='q6fgVVmdpgY'
+    assert args[args.index('--format')+1]=='18'
+    (pathlib.Path(__file__).parent.parent/'used-cache').write_text('yes')
 if args[-1].endswith('slowtest001'):
     signal.signal(signal.SIGTERM, signal.SIG_IGN)
 print('FRAME_PROGRESS:'+json.dumps({'formatId':'137','downloaded':1024,'total':2048}),flush=True)
@@ -101,6 +109,43 @@ class NativeHostTests(unittest.TestCase):
         self.assertNotEqual(results[0]['result']['filename'], results[1]['result']['filename'])
         self.assertEqual(sorted(p.stat().st_size for p in self.downloads.iterdir()), [2048, 2048])
         self.assertEqual(len(json.loads((self.root / 'downloads.json').read_text())), 2)
+
+    def test_cached_info_survives_new_host_and_is_used_for_download(self):
+        for _ in range(2):
+            host = self.start()
+            self.send(host, {'action': 'info', 'url': 'https://youtu.be/q6fgVVmdpgY'})
+            self.assertEqual(self.terminal(host)['type'], 'result')
+        self.assertEqual((self.root / 'extractions.log').read_text().count('extract'), 1)
+        self.send(host, {'action': 'download', 'url': 'https://youtu.be/q6fgVVmdpgY', 'formatId': '18', 'filename': 'cached.mp4'})
+        self.assertEqual(self.terminal(host)['type'], 'result')
+        self.assertTrue((self.root / 'used-cache').is_file())
+        cached = self.root / 'youtube-cache/q6fgVVmdpgY.json'
+        os.utime(cached, (time.time() - 121, time.time() - 121))
+        self.send(host, {'action': 'info', 'url': 'https://youtu.be/q6fgVVmdpgY'})
+        self.assertEqual(self.terminal(host)['type'], 'result')
+        self.assertEqual((self.root / 'extractions.log').read_text().count('extract'), 2)
+        self.send(host, {'action': 'info', 'url': 'https://youtu.be/q6fgVVmdpgY', 'refresh': True})
+        self.assertEqual(self.terminal(host)['type'], 'result')
+        self.assertEqual((self.root / 'extractions.log').read_text().count('extract'), 3)
+
+    def test_silent_process_times_out_and_is_reaped(self):
+        spec = importlib.util.spec_from_file_location('host_timeout', 'native/frame_host.py')
+        module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+        host = module.Host({}, emit=lambda value: None)
+        started = time.monotonic()
+        with self.assertRaises(module.HostError) as error:
+            host.run([sys.executable, '-c', 'import time; time.sleep(30)'], idle_timeout=0.1)
+        self.assertEqual(error.exception.code, 'TIMEOUT')
+        self.assertLess(time.monotonic() - started, 3)
+        self.assertIsNone(host.process)
+
+    def test_disconnected_browser_does_not_print_broken_pipe_traceback(self):
+        host = self.start()
+        host.stdout.close()
+        self.send(host, {'action': 'ping'})
+        host.stdin.close()
+        self.assertEqual(host.wait(timeout=6), 0)
+        self.assertNotIn('BrokenPipeError', host.stderr.read().decode())
 
     def test_cancel_kills_downloader_and_cleans_temporary_files(self):
         host = self.start()

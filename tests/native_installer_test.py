@@ -89,6 +89,18 @@ class InstallerTests(unittest.TestCase):
         manifest = json.loads((folder / 'com.frame.downloader.json').read_text())
         self.assertEqual(manifest['path'], str(folder / 'frame-helper.bat'))
 
+    def test_custom_browser_directory_is_registered_alongside_defaults(self):
+        custom = self.home / 'Chrome Video Debug'
+        custom.mkdir()
+        folder = installer.install([EXTENSION], self.home, 'darwin', user_data_dir=str(custom))
+        path = custom / 'NativeMessagingHosts/com.frame.downloader.json'
+        manifest = json.loads(path.read_text())
+        self.assertEqual(manifest['path'], str(folder / 'frame-helper'))
+        self.assertEqual(manifest['allowed_origins'], ['chrome-extension://' + EXTENSION + '/'])
+        self.assertTrue((self.home / 'Library/Application Support/Google/Chrome/NativeMessagingHosts/com.frame.downloader.json').is_file())
+        with self.assertRaisesRegex(ValueError, 'existing absolute'):
+            installer.install([EXTENSION], self.home, 'darwin', user_data_dir=str(custom / 'missing'))
+
     def test_invalid_id_or_missing_dependencies_do_not_create_registration(self):
         with self.assertRaises(ValueError):
             installer.install(['not-an-extension'], self.home, 'linux')

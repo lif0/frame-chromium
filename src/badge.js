@@ -1,4 +1,5 @@
 import { candidateList } from './media-context.js';
+import { initLanguage, t } from './i18n.js';
 export const candidateSignature = candidates => candidateList(candidates).map(v => v.id).sort().join('|');
 const icons = new Map();
 export function countIcon(count, size) {
@@ -16,12 +17,13 @@ export function countIcon(count, size) {
   return ctx.getImageData(0, 0, size, size);
 }
 export async function setCount(tabId, count) {
+  await initLanguage();
   await chrome.action.setBadgeText({ tabId, text: '' });
   if (count) {
     if (!icons.has(count)) icons.set(count, { 16: countIcon(count, 16), 32: countIcon(count, 32) });
     await chrome.action.setIcon({ tabId, imageData: icons.get(count) });
   } else await chrome.action.setIcon({ tabId, path: { 16: 'icons/16.png', 32: 'icons/32.png' } });
-  await chrome.action.setTitle({ tabId, title: count ? `Найдено видео: ${count} — Frame` : 'Скачать видео — Frame' });
+  await chrome.action.setTitle({ tabId, title: count ? t('Найдено видео: {count} — Frame', { count }) : t('Скачать видео — Frame') });
 }
 export async function updateBadge(tabId, candidates) {
   const key = `view:${tabId}`, signature = candidateSignature(candidates);

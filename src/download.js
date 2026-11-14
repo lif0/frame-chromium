@@ -1,3 +1,5 @@
+import { initUI } from './ui.js';
+import { t, translateMessage, onLanguageChange } from './i18n.js';
 import { downloadJob } from './job-runner.js';
 import { restoreJob, terminalStates } from './jobs.js';
 import { bytesLabel, sizeLabel } from './size.js';
@@ -10,7 +12,7 @@ function summary() {
   const values = [...jobs.values()];
   $('#count').textContent = values.length;
   const running = values.filter(j => j.active).length, waiting = values.filter(j => j.job.state === 'ready').length;
-  $('#summary').textContent = values.length ? `Скачиваются: ${running} · Ожидают: ${waiting} · Завершено: ${values.filter(j => j.job.state === 'done').length}` : 'Видео со всех сайтов в одном месте.';
+  $('#summary').textContent = values.length ? t('Скачиваются: {running} · Ожидают: {waiting} · Завершено: {done}', { running, waiting, done: values.filter(j => j.job.state === 'done').length }) : t('Видео со всех сайтов в одном месте.');
   $('#empty').hidden = values.length > 0;
   $('#clear').disabled = !values.some(j => terminalStates.has(j.job.state) && !j.active);
 }
@@ -37,19 +39,23 @@ class DownloadRow {
     const j = this.job;
     this.el('.job-title').textContent = j.title; this.el('.job-title').title = j.title;
     let site = ''; try { site = new URL(j.siteUrl || j.source || j.url).hostname; } catch {}
-    this.el('.job-meta').textContent = [site, j.height ? `${j.height}p` : 'Исходное', j.filename].filter(Boolean).join(' · ');
-    this.el('.state-tag').textContent = stateNames[j.state] || 'Ожидает'; this.root.dataset.state = j.state;
-    this.el('.status').textContent = j.status || 'Готово к скачиванию';
-    this.el('.size').textContent = j.state === 'done' && j.outputBytes ? `${bytesLabel(j.outputBytes)} · файл` : j.downloaded ? `${bytesLabel(j.downloaded)} / ${sizeLabel(j.size)}` : sizeLabel(j.size);
+    this.el('.job-meta').textContent = [site, j.height ? `${j.height}p` : t('Исходное'), j.filename].filter(Boolean).join(' · ');
+    this.el('.state-tag').textContent = t(stateNames[j.state] || 'Ожидает'); this.root.dataset.state = j.state;
+    this.el('.status').textContent = translateMessage(j.status || 'Готово к скачиванию');
+    if (j.state === 'running' && Number.isFinite(j.speed) && j.speed > 0) {
+      this.el('.status').textContent += ` · ${bytesLabel(j.speed)}${t('/с')}`;
+      if (Number.isFinite(j.eta) && j.eta > 0) this.el('.status').textContent += ` · ${t('осталось ≈ {seconds} с', { seconds: Math.ceil(j.eta) })}`;
+    }
+    this.el('.size').textContent = j.state === 'done' && j.outputBytes ? `${bytesLabel(j.outputBytes)} · ${t('файл')}` : j.downloaded ? `${bytesLabel(j.downloaded)} / ${sizeLabel(j.size)}` : sizeLabel(j.size);
     this.el('.bar').style.width = `${Math.min(100, Math.max(0, j.progress || 0))}%`;
     this.el('.progress').setAttribute('aria-valuenow', String(Math.round(j.progress || 0)));
     this.el('.start').hidden = this.active || j.state === 'done';
-    this.el('.start').textContent = j.state === 'ready' ? 'Начать скачивание' : 'Повторить';
+    this.el('.start').textContent = t(j.state === 'ready' ? 'Начать скачивание' : 'Повторить');
     this.el('.start').disabled = this.active;
     this.el('.cancel').hidden = !this.active || !this.controller;
     this.el('.remove').hidden = this.active;
     this.el('.show').hidden = j.state !== 'done' || (!this.result?.fileHandle && j.downloadId === undefined && !j.nativeFileId);
-    this.el('.job-error').textContent = j.error || ''; this.el('.job-error').hidden = !j.error;
+    this.el('.job-error').textContent = translateMessage(j.error || ''); this.el('.job-error').hidden = !j.error;
     summary();
   }
   async start() {
@@ -58,14 +64,14 @@ class DownloadRow {
     let handle;
     try {
       // The save picker is invoked in the original click's activation context.
-      if (this.job.type === 'hls') handle = await window.showSaveFilePicker({ suggestedName: this.job.filename, types: [{ description: 'MP4 видео', accept: { 'video/mp4': ['.mp4'] } }] });
+      if (this.job.type === 'hls') handle = await window.showSaveFilePicker({ suggestedName: this.job.filename, types: [{ description: t('MP4 видео'), accept: { 'video/mp4': ['.mp4'] } }] });
     } catch (e) {
       this.active = false;
       if (e.name !== 'AbortError') { this.job.state = 'error'; this.job.error = e.message; this.persist(true); }
       this.render(); return;
     }
     this.controller = new AbortController(); this.el('.cancel').disabled = false;
-    Object.assign(this.job, { state: 'running', error: '', downloaded: 0, progress: 0, status: 'Подготовка…' });
+    Object.assign(this.job, { state: 'running', error: '', downloaded: 0, progress: 0, speed: 0, eta: null, status: 'Подготовка…' });
     this.persist(true); this.render();
     try {
       this.result = await downloadJob(this.job, { signal: this.controller.signal, fileHandle: handle, onUpdate: update => {
@@ -119,10 +125,14 @@ chrome.storage.onChanged.addListener((changes, area) => {
   summary();
   if (changes['manager-focus']?.newValue) focusJob(changes['manager-focus'].newValue);
 });
+await initUI();
+onLanguageChange(() => { for (const row of jobs.values()) row.render(); summary(); });
 // Only one manager may execute jobs, even if a user duplicates its tab manually.
 navigator.locks.request('frame-download-manager', { ifAvailable: true }, async lock => {
   if (!lock) {
-    $('#manager-notice').textContent = 'Менеджер уже открыт в другой вкладке. Закройте эту вкладку и откройте его через «Все загрузки» в расширении.';
+    const message = 'Менеджер уже открыт в другой вкладке. Закройте эту вкладку и откройте его через «Все загрузки» в расширении.';
+    $('#manager-notice').textContent = t(message);
+    onLanguageChange(() => { $('#manager-notice').textContent = t(message); $('#clear').disabled = true; });
     $('#manager-notice').hidden = false; $('#clear').disabled = true; return;
   }
   owner = true;
@@ -131,4 +141,4 @@ navigator.locks.request('frame-download-manager', { ifAvailable: true }, async l
   summary();
   if (saved['manager-focus']) focusJob(saved['manager-focus']);
   await new Promise(resolve => window.addEventListener('pagehide', resolve, { once: true }));
-}).catch(e => { $('#manager-notice').textContent = e.message; $('#manager-notice').hidden = false; });
+}).catch(e => { $('#manager-notice').textContent = translateMessage(e.message); $('#manager-notice').hidden = false; });

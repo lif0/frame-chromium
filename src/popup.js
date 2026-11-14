@@ -1,3 +1,5 @@
+import { initUI } from './ui.js';
+import { t, translateMessage, onLanguageChange } from './i18n.js';
 import { BUILD_VERSION, requireManagerResponse } from './messages.js';
 import { safeFilename } from './hls.js';
 import { playlist, request, timeLabel } from './network.js';
@@ -7,12 +9,11 @@ import { collectPreviews, matchingPreview } from './previews.js';
 import { candidateSignature } from './badge.js';
 import { previewFrame } from './preview-frame.js';
 import { youtubeVideoId, youtubeURL, youtubePageInfo, youtubeOptions } from './youtube.js';
-import { nativeRequest } from './native.js';
 const $ = selector => document.querySelector(selector);
 const preview = new URLSearchParams(location.search).has('preview');
 const sizeCache = new Map();
 let busy = false, refreshPending = false, preferred = 1080, sourceTabId, generation = 0;
-function notice(message) { $('#notice').textContent = message; $('#notice').hidden = !message; }
+function notice(message) { $('#notice').textContent = translateMessage(message); $('#notice').hidden = !message; }
 function filename(title, variant, ext = 'mp4') { return `${safeFilename(title)}${variant.height ? ` — ${variant.height}p` : ''}.${ext}`; }
 function setPreview(root, image) {
   if (!image) return;
@@ -49,19 +50,19 @@ function card(video, title, options, siteUrl, duration, image = '', target = $('
   const select = root.querySelector('select');
   for (const [i, v] of options.entries()) {
     const option = document.createElement('option'); option.value = i;
-    option.textContent = v.height ? `${v.height}p${v.height >= 2160 ? ' · 4K' : v.height >= 1440 ? ' · QHD' : v.height >= 1080 ? ' · Full HD' : v.height >= 720 ? ' · HD' : ''}` : 'Качество неизвестно'; select.append(option);
+    option.textContent = v.height ? `${v.height}p${v.height >= 2160 ? ' · 4K' : v.height >= 1440 ? ' · QHD' : v.height >= 1080 ? ' · Full HD' : v.height >= 720 ? ' · HD' : ''}` : t('Качество неизвестно'); select.append(option);
   }
   const best = options.findIndex(v => v.height <= preferred); select.value = String(best < 0 ? 0 : best);
   const extension = video.type === 'file' ? new URL(video.url).pathname.match(/\.(webm|mov|m4v)$/i)?.[1]?.toLowerCase() || 'mp4' : 'mp4';
   let revision = 0, currentSize;
   const update = async () => {
     const version = ++revision, variant = options[select.value];
-    currentSize = null; root.querySelector('.download-size').textContent = 'Считаем…';
+    currentSize = null; root.querySelector('.download-size').textContent = t('Считаем…');
     const size = preview ? { bytes: variant.height * 37000, exact: true, duration: duration || 68 } : await measure(video, variant);
     if (version !== revision || !root.isConnected) return;
     currentSize = size;
     root.querySelector('.download-size').textContent = sizeLabel(size);
-    root.querySelector('.download-size').title = size.exact ? 'Объём загружаемых дорожек; итоговый файл может немного отличаться' : 'Оценка по длительности и битрейту';
+    root.querySelector('.download-size').title = size.exact ? t('Объём загружаемых дорожек; итоговый файл может немного отличаться') : t('Оценка по длительности и битрейту');
     if (size.duration) durationElement.textContent = timeLabel(size.duration);
   };
   select.addEventListener('change', () => { update(); if (!preview) chrome.storage.local.set({ preferred: options[select.value].height }).catch(() => {}); });
@@ -78,7 +79,7 @@ function card(video, title, options, siteUrl, duration, image = '', target = $('
   target.append(fragment); update();
   return root;
 }
-async function refresh() {
+async function refresh(force = false) {
   if (busy) { refreshPending = true; return; }
   busy = true; const current = ++generation;
   $('#refresh').disabled = true; notice('');
@@ -87,9 +88,9 @@ async function refresh() {
   $('#loading').hidden = $('#videos').childElementCount > 0 || !$('#empty').hidden;
   try {
     if (preview) {
-      document.body.classList.add('preview'); $('#site').textContent = 'algocode.io · Предпросмотр';
+      document.body.classList.add('preview'); $('#site').textContent = t('algocode.io · Предпросмотр');
       $('#videos').replaceChildren();
-      for (const title of ['Важность паттернов', 'Два указателя: разбор задачи', 'Практика и примеры']) card({ type: 'hls' }, title, [2160,1440,1080,720,480,360].map(height => ({ height })), '', 68);
+      for (const title of ['Важность паттернов', 'Два указателя: разбор задачи', 'Практика и примеры']) card({ type: 'hls' }, t(title), [2160,1440,1080,720,480,360].map(height => ({ height })), '', 68);
       $('#count').textContent = '3'; return;
     }
     const loadedVersion = chrome.runtime.getManifest().version;
@@ -100,7 +101,7 @@ async function refresh() {
     const tab = requestedTab ? await chrome.tabs.get(requestedTab) : (await chrome.tabs.query({ active: true, currentWindow: true }))[0];
     sourceTabId = tab?.id;
     $('#youtube-note').hidden = !youtubeVideoId(tab?.url);
-    $('#site').textContent = tab?.url?.startsWith('http') ? new URL(tab.url).hostname : 'Откройте страницу с видео';
+    $('#site').textContent = tab?.url?.startsWith('http') ? new URL(tab.url).hostname : t('Откройте страницу с видео');
     if (!tab?.id) { $('#videos').replaceChildren(); $('#count').textContent = '0'; $('#empty').hidden = false; return; }
     await chrome.scripting.executeScript({ target: { tabId: tab.id, allFrames: true }, files: ['detect.js'] }).catch(() => {});
     const youtubeId = youtubeVideoId(tab.url);
@@ -108,13 +109,16 @@ async function refresh() {
       $('#videos').replaceChildren(); $('#empty').hidden = true; $('#count').textContent = '1';
       try {
         const pageInfo = await chrome.scripting.executeScript({ target: { tabId: tab.id }, world: 'MAIN', func: youtubePageInfo }).then(r => r[0]?.result).catch(() => null);
-        const info = await nativeRequest({ action: 'info', url: youtubeURL(youtubeId) }, { signal: AbortSignal.timeout(60000) });
+        const response = await chrome.runtime.sendMessage({ type: 'youtube-info', url: youtubeURL(youtubeId), refresh: force === true });
+        if (response.error) throw Object.assign(new Error(response.error), { code: response.code });
+        const info = response.info;
+        if (current !== generation) return;
         if (info.videoId !== youtubeId) throw new Error('Плеер переключился на другой ролик. Обновите список.');
         const options = youtubeOptions(info);
         if (!options.length) throw new Error('Для этого ролика не найдено доступных форматов скачивания.');
         card({ type: 'youtube', url: youtubeURL(youtubeId), source: youtubeURL(youtubeId), videoId: youtubeId }, info.title || pageInfo?.title || tab.title, options, youtubeURL(youtubeId), info.duration || pageInfo?.duration, info.thumbnail || pageInfo?.thumbnail);
       } catch (error) {
-        notice(error.code === 'HELPER_MISSING' ? `${error.message} Для скачивания с YouTube установите помощник Frame и зависимости.` : error.message);
+        notice(error.code === 'HELPER_MISSING' ? `${translateMessage(error.message)} ${t('Для скачивания с YouTube установите frame-helper и зависимости.')}` : error.message);
         $('#helper-setup').hidden = !['HELPER_MISSING', 'HELPER_FORBIDDEN', 'DEPENDENCY_MISSING', 'HELPER_DISCONNECTED'].includes(error.code);
       }
       await updateActiveCount(); return;
@@ -144,7 +148,7 @@ async function refresh() {
     const previews = await previewsPromise, fragment = document.createDocumentFragment();
     const rows = visible.map(({video, options, duration}, index) => {
       const image = matchingPreview(video, duration, previews);
-      const root = card(video, tab.title || 'Видео', options, tab.url, duration, image, fragment);
+      const root = card(video, tab.title || t('Видео'), options, tab.url, duration, image, fragment);
       return {video, options, duration, image, root, index};
     });
     $('#videos').replaceChildren(fragment);
@@ -184,7 +188,7 @@ async function refresh() {
 async function updateActiveCount() {
   const data = await chrome.storage.session.get(null);
   const count = Object.entries(data).filter(([k,v]) => k.startsWith('job:') && ['ready','running'].includes(v.state)).length;
-  $('#active-count').textContent = count ? `В менеджере загрузок: ${count}` : '';
+  $('#active-count').textContent = count ? t('В менеджере загрузок: {count}', { count }) : '';
 }
 $('#manager').addEventListener('click', async () => {
   if (preview) { notice('Все загрузки открываются в одной общей вкладке.'); return; }
@@ -194,11 +198,13 @@ $('#manager').addEventListener('click', async () => {
     window.close();
   } catch (error) { notice(error.message); }
 });
-$('#refresh').addEventListener('click', refresh); $('#reload').addEventListener('click', refresh);
+$('#refresh').addEventListener('click', () => refresh(true)); $('#reload').addEventListener('click', () => refresh(true));
 $('#helper-setup').addEventListener('click', () => chrome.tabs.create({ url: chrome.runtime.getURL('setup.html') }));
 if (!preview) chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== 'session') return;
   if (changes[`tab:${sourceTabId}`]) refresh();
   if (Object.keys(changes).some(k => k.startsWith('job:'))) updateActiveCount();
 });
+await initUI();
+onLanguageChange(refresh);
 refresh();

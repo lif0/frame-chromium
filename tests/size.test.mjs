@@ -10,7 +10,7 @@ test('exact size includes init segments and separate audio', () => {
 test('bitrate estimate is explicitly approximate and does not double count audio', () => {
   const video = { type: 'media', segments: [{ url: 'x.ts' }], duration: 20 };
   assert.deepEqual(estimateSize(video, track(200), 800000), { bytes: 2000000, exact: false, duration: 20 });
-  assert.equal(sizeLabel(estimateSize(video, null, 0)), 'Размер неизвестен');
+  assert.equal(sizeLabel(estimateSize(video, null, 0)), 'Size unknown');
   assert.match(sizeLabel(estimateSize(video, null, 800000)), /^≈ /);
-  assert.equal(bytesLabel(2 * 1024 ** 3), '2.00 ГБ');
+  assert.equal(bytesLabel(2 * 1024 ** 3), '2.00 GB');
 });

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Register Frame for Chrome and Chromium in the current user's account."""
+import argparse
 import json
 import os
 from pathlib import Path
@@ -25,11 +26,17 @@ def destinations(platform, home):
     raise ValueError('Supported systems: macOS, Linux and Windows.')
 
 
-def install(extension_ids, home=None, platform=None):
+def install(extension_ids, home=None, platform=None, user_data_dir=None):
     platform = platform or sys.platform
     home = home or Path.home()
     if not extension_ids or any(not re.fullmatch(r'[a-p]{32}', value) for value in extension_ids):
         raise ValueError('Pass the extension ID shown on the Frame setup page (32 letters a–p).')
+    if user_data_dir is not None:
+        user_data_dir = Path(user_data_dir).expanduser()
+        if platform == 'win32':
+            raise ValueError('Windows uses registry registration; --user-data-dir is only needed on macOS/Linux.')
+        if not user_data_dir.is_absolute() or not user_data_dir.is_dir():
+            raise ValueError('--user-data-dir must be an existing absolute browser data directory, not its Default subfolder.')
     extras = [str(home / '.local/bin'), str(home / '.deno/bin'), '/opt/homebrew/bin', '/usr/local/bin']
     search_path = os.pathsep.join([os.environ.get('PATH', ''), *extras])
     programs = {name: shutil.which(name, path=search_path) for name in ('yt-dlp', 'ffmpeg', 'deno')}
@@ -37,6 +44,8 @@ def install(extension_ids, home=None, platform=None):
     if missing:
         raise ValueError('Missing dependencies: ' + ', '.join(missing) + '. Follow the instructions for your OS, then reopen the terminal.')
     folder, manifest_dirs = destinations(platform, home)
+    if user_data_dir is not None:
+        manifest_dirs = list(dict.fromkeys([*manifest_dirs, user_data_dir / 'NativeMessagingHosts']))
     folder.mkdir(parents=True, exist_ok=True)
     if platform != 'win32':
         folder.chmod(0o700)
@@ -57,7 +66,7 @@ def install(extension_ids, home=None, platform=None):
     config_file.write_text(json.dumps(config, indent=2), encoding='utf-8')
     if platform != 'win32':
         config_file.chmod(0o600)
-    manifest = {'name': HOST, 'description': 'Frame YouTube downloader', 'path': str(launcher), 'type': 'stdio', 'allowed_origins': origins}
+    manifest = {'name': HOST, 'description': 'frame-helper — YouTube downloader', 'path': str(launcher), 'type': 'stdio', 'allowed_origins': origins}
     if platform == 'win32':
         import winreg
         path = folder / (HOST + '.json')
@@ -75,9 +84,13 @@ def install(extension_ids, home=None, platform=None):
 
 
 if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description='Install frame-helper for Chrome and Chromium.')
+    parser.add_argument('extension_ids', nargs='+', help='Extension IDs from the Frame setup page')
+    parser.add_argument('--user-data-dir', help='Also register with a custom Chrome/Chromium data directory (macOS/Linux)')
+    args = parser.parse_args()
     try:
-        installed = install(sys.argv[1:])
-        print('Frame helper installed in ' + str(installed) + '. Return to Frame and check the connection.')
+        installed = install(args.extension_ids, user_data_dir=args.user_data_dir)
+        print('frame-helper installed in ' + str(installed) + '. Return to Frame and check the connection.')
     except (ValueError, OSError) as error:
         print(str(error), file=sys.stderr)
         sys.exit(1)

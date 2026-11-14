@@ -1,4 +1,10 @@
+import { initUI } from './ui.js';
+import { t, translateMessage, onLanguageChange } from './i18n.js';
 import { nativeRequest } from './native.js';
+await initUI();
+let statusMessage = '', statusValues = {};
+function setStatus(message, values = {}) { statusMessage = message; statusValues = values; document.querySelector('#status').textContent = translateMessage(t(message, values)); }
+onLanguageChange(() => { setStatus(statusMessage, statusValues); for (const button of document.querySelectorAll('[data-copy]')) if (button.dataset.copied) button.textContent = t('Скопировано'); });
 const id = chrome.runtime.id;
 const commands = {
   macos: `bash native/install-macos.sh ${id}`,
@@ -30,18 +36,18 @@ chrome.runtime.getPlatformInfo().then(({ os }) => {
 }).catch(() => {});
 for (const element of document.querySelectorAll('[data-command]')) element.textContent = commands[element.dataset.command];
 for (const button of document.querySelectorAll('[data-copy]')) button.addEventListener('click', async () => {
-  try { await navigator.clipboard.writeText(commands[button.dataset.copy]); button.textContent = 'Скопировано'; }
-  catch { document.querySelector('#status').textContent = 'Выделите и скопируйте команду вручную.'; }
+  try { await navigator.clipboard.writeText(commands[button.dataset.copy]); button.dataset.copied = 'true'; button.textContent = t('Скопировано'); }
+  catch { setStatus('Выделите и скопируйте команду вручную.'); }
 });
 document.querySelector('#check').addEventListener('click', async event => {
   const button = event.currentTarget; button.disabled = true;
-  const status = document.querySelector('#status'); status.textContent = 'Проверяем подключение…'; status.dataset.state = 'checking';
+  const status = document.querySelector('#status'); setStatus('Проверяем подключение…'); status.dataset.state = 'checking';
   try {
     const result = await nativeRequest({ action: 'ping' }, { signal: AbortSignal.timeout(12000) });
-    status.textContent = `Помощник найден и готов к работе. yt-dlp ${result.ytdlpVersion}.`;
+    setStatus('frame-helper найден и готов к работе. yt-dlp {version}.', { version: result.ytdlpVersion });
     status.dataset.state = 'success';
   } catch (error) {
-    status.textContent = error.name === 'TimeoutError' ? 'Помощник не ответил. Повторите проверку.' : error.message;
+    setStatus(error.name === 'TimeoutError' ? 'frame-helper не ответил. Повторите проверку.' : error.message);
     status.dataset.state = 'error';
   } finally { button.disabled = false; }
 });

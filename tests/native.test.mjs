@@ -5,9 +5,9 @@ import { nativeRequest } from '../src/native.js';
 
 test('connection checks distinguish a missing, forbidden, and failed helper', async () => {
   for (const [detail, code, message] of [
-    ['Specified native messaging host not found.', 'HELPER_MISSING', 'Помощник не найден.'],
-    ['Access to the specified native messaging host is forbidden.', 'HELPER_FORBIDDEN', 'Помощник не подключён'],
-    ['Native host has exited.', 'HELPER_DISCONNECTED', 'Помощник не запустился'],
+    ['Specified native messaging host not found.', 'HELPER_MISSING', 'frame-helper не найден.'],
+    ['Access to the specified native messaging host is forbidden.', 'HELPER_FORBIDDEN', 'frame-helper не подключён'],
+    ['Native host has exited.', 'HELPER_DISCONNECTED', 'frame-helper не запустился'],
   ]) {
   const disconnect = [];
   globalThis.chrome = { runtime: {

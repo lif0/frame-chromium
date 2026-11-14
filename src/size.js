@@ -1,3 +1,4 @@
+import { t } from './i18n.js';
 export function trackSize(track) {
   if (!track || track.type !== 'media') return null;
   const parts = [...(track.init ? [track.init] : []), ...track.segments];
@@ -13,12 +14,12 @@ export function estimateSize(video, audio, bandwidth = 0) {
   return { bytes: null, exact: false, duration };
 }
 export function bytesLabel(bytes) {
-  if (!Number.isFinite(bytes) || bytes < 0) return 'Размер неизвестен';
-  if (bytes >= 1024 ** 3) return `${(bytes / 1024 ** 3).toFixed(2)} ГБ`;
-  if (bytes >= 1024 ** 2) return `${(bytes / 1024 ** 2).toFixed(1)} МБ`;
-  return `${Math.ceil(bytes / 1024)} КБ`;
+  if (!Number.isFinite(bytes) || bytes < 0) return t('Размер неизвестен');
+  if (bytes >= 1024 ** 3) return `${(bytes / 1024 ** 3).toFixed(2)} ${t('ГБ')}`;
+  if (bytes >= 1024 ** 2) return `${(bytes / 1024 ** 2).toFixed(1)} ${t('МБ')}`;
+  return `${Math.ceil(bytes / 1024)} ${t('КБ')}`;
 }
 export function sizeLabel(size) {
-  if (!size || size.bytes === null) return 'Размер неизвестен';
+  if (!size || size.bytes === null) return t('Размер неизвестен');
   return `${size.exact ? '' : '≈ '}${bytesLabel(size.bytes)}`;
 }

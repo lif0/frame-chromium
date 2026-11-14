@@ -2,8 +2,16 @@ import { openManager } from './jobs.js';
 import { updateBadge, candidateSignature, setCount } from './badge.js';
 import { mediaKind, mediaScope, captureContext, isMediaFragment } from './media-context.js';
 import { youtubeVideoId, youtubeURL } from './youtube.js';
+import { initLanguage, onLanguageChange } from './i18n.js';
+import { createYouTubeInfoLoader } from './youtube-info.js';
+const youtubeInfo = createYouTubeInfoLoader();
 let queue = Promise.resolve();
 function enqueue(fn) { queue = queue.catch(() => {}).then(fn); return queue; }
+initLanguage();
+onLanguageChange(() => enqueue(async () => {
+  const data = await chrome.storage.session.get(null);
+  for (const [key, candidates] of Object.entries(data)) if (key.startsWith('tab:')) await updateBadge(Number(key.slice(4)), candidates).catch(() => {});
+}).catch(() => {}));
 async function foundYouTube(tabId, url) {
   const id = youtubeVideoId(url);
   if (!id || tabId < 0) return;
@@ -82,6 +90,13 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
     return true;
   }
   if (!sender.url?.startsWith(chrome.runtime.getURL(''))) return;
+  if (message.type === 'youtube-info') {
+    youtubeInfo(message.url, message.refresh === true).then(
+      info => reply({ info }),
+      error => reply({ error: error.name === 'TimeoutError' ? 'YouTube не ответил за минуту. Попробуйте ещё раз.' : error.message, code: error.code }),
+    );
+    return true;
+  }
   if (message.type === 'visible-videos') {
     enqueue(async () => {
       if (!Number.isInteger(message.tabId) || !Number.isInteger(message.count) || message.count < 0) return;

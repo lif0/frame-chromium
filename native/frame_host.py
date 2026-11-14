@@ -13,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 from urllib.parse import parse_qs, urlparse
 import uuid
 
@@ -20,6 +21,7 @@ ROOT = Path(__file__).resolve().parent
 if sys.platform != 'win32':
     os.environ['PATH'] = os.pathsep.join([os.environ.get('PATH', ''), '/opt/homebrew/bin', '/usr/local/bin', str(Path.home() / '.local/bin'), str(Path.home() / '.deno/bin')])
 OUTPUT_LOCK = threading.Lock()
+OUTPUT_CLOSED = threading.Event()
 
 
 @contextmanager
@@ -86,10 +88,18 @@ def canonical_url(value):
 def send(message):
     data = json.dumps(message, ensure_ascii=False, allow_nan=False).encode('utf-8')
     if len(data) > 1024 * 1024:
-        raise HostError('Ответ помощника слишком большой.')
+        raise HostError('Ответ frame-helper слишком большой.')
     with OUTPUT_LOCK:
-        sys.stdout.buffer.write(struct.pack('<I', len(data)) + data)
-        sys.stdout.buffer.flush()
+        if OUTPUT_CLOSED.is_set():
+            return
+        try:
+            sys.stdout.buffer.write(struct.pack('<I', len(data)) + data)
+            sys.stdout.buffer.flush()
+        except BrokenPipeError:
+            OUTPUT_CLOSED.set()
+            # Avoid a second exception when Python flushes stdout on exit.
+            with open(os.devnull, 'wb') as sink:
+                os.dup2(sink.fileno(), sys.stdout.fileno())
 
 
 def read_exact(stream, length):
@@ -115,7 +125,7 @@ def dependencies(config):
     found = {name: saved.get(name) if saved.get(name) and Path(saved[name]).is_file() else shutil.which(name) for name in ('yt-dlp', 'ffmpeg', 'deno')}
     missing = [name for name, path in found.items() if not path]
     if missing:
-        raise HostError('Не установлены: ' + ', '.join(missing) + '. Откройте настройку помощника.', 'DEPENDENCY_MISSING')
+        raise HostError('Не установлены: ' + ', '.join(missing) + '. Откройте настройку frame-helper.', 'DEPENDENCY_MISSING')
     return found
 
 
@@ -126,7 +136,7 @@ def useful_error(lines):
     if 'Requested format is not available' in text:
         return 'Выбранное качество больше недоступно. Обновите список и выберите качество заново.'
     if 'Private video' in text or 'members-only' in text or 'DRM' in text:
-        return 'Этот ролик закрыт или защищён. Помощник не получил доступ к скачиванию.'
+        return 'Этот ролик закрыт или защищён. frame-helper не получил доступ к скачиванию.'
     errors = [line for line in lines if 'ERROR:' in line]
     return re.sub(r'https?://\S+', '[адрес]', (errors[-1] if errors else text or 'yt-dlp завершился с ошибкой.'))[:700]
 
@@ -139,6 +149,7 @@ class Host:
         self.process_lock = threading.Lock()
         self.process = None
         self.thread = None
+        self.language = 'en'
 
     def cancel(self):
         self.canceled.set()
@@ -154,7 +165,7 @@ class Host:
                 timer.daemon = True
                 timer.start()
 
-    def run(self, argv, on_line=None):
+    def run(self, argv, on_line=None, idle_timeout=None):
         with self.process_lock:
             if self.canceled.is_set():
                 raise HostError('Загрузка отменена.', 'CANCELED')
@@ -165,8 +176,21 @@ class Host:
         lines = collections.deque(maxlen=30)
         collected = []
         total = 0
+        last_output = time.monotonic()
+        finished = threading.Event()
+        timed_out = threading.Event()
+        def watch():
+            while not finished.wait(min(1, idle_timeout)):
+                if time.monotonic() - last_output >= idle_timeout:
+                    timed_out.set()
+                    stop_process(process, force=True)
+                    return
+        watchdog = threading.Thread(target=watch, daemon=True) if idle_timeout else None
+        if watchdog:
+            watchdog.start()
         try:
             for line in process.stdout:
+                last_output = time.monotonic()
                 line = line.rstrip('\r\n')
                 if on_line:
                     on_line(line)
@@ -180,10 +204,15 @@ class Host:
             code = process.wait()
             if self.canceled.is_set():
                 raise HostError('Загрузка отменена.', 'CANCELED')
+            if timed_out.is_set():
+                raise HostError('YouTube долго не передаёт данные. Проверьте соединение и повторите попытку.', 'TIMEOUT')
             if code:
                 raise HostError(useful_error(lines))
             return '\n'.join(collected)
         finally:
+            finished.set()
+            if watchdog:
+                watchdog.join()
             if process.poll() is None:
                 try:
                     stop_process(process)
@@ -201,11 +230,45 @@ class Host:
     def command(self):
         programs = dependencies(self.config)
         return [programs['yt-dlp'], '--ignore-config', '--no-playlist', '--no-warnings',
-                '--socket-timeout', '20', '--retries', '2', '--js-runtimes', 'deno:' + programs['deno'],
+                '--socket-timeout', '15', '--retries', '2', '--fragment-retries', '2', '--extractor-retries', '2',
+                '--abort-on-unavailable-fragments', '--js-runtimes', 'deno:' + programs['deno'],
                 '--ffmpeg-location', programs['ffmpeg']]
 
+    def cache_path(self, url):
+        folder = ROOT / 'youtube-cache'
+        folder.mkdir(mode=0o700, exist_ok=True)
+        # Canonical URL guarantees a safe, fixed-length filename.
+        return folder / (canonical_url(url).split('v=')[1] + '.json')
+
+    def cached_info(self, url):
+        path = self.cache_path(url)
+        try:
+            if not 0 <= time.time() - path.stat().st_mtime < 120:
+                return None
+            data = json.loads(path.read_text(encoding='utf-8'))
+            return data if data.get('id') == url.split('v=')[1] else None
+        except (OSError, ValueError, AttributeError):
+            return None
+
+    def save_info(self, url, data):
+        path = self.cache_path(url)
+        # Atomic publication keeps concurrent helper processes from reading half a JSON.
+        with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir=path.parent, delete=False) as file:
+            temporary = Path(file.name)
+            json.dump(data, file)
+        try:
+            os.replace(temporary, path)
+            for old in sorted(path.parent.glob('*.json'), key=lambda p: p.stat().st_mtime, reverse=True)[20:]:
+                old.unlink(missing_ok=True)
+        finally:
+            temporary.unlink(missing_ok=True)
+
     def info(self, message):
-        data = json.loads(self.run(self.command() + ['--dump-single-json', '--skip-download', '--', canonical_url(message.get('url'))]))
+        url = canonical_url(message.get('url'))
+        data = None if message.get('refresh') else self.cached_info(url)
+        if data is None:
+            data = json.loads(self.run(self.command() + ['--dump-single-json', '--skip-download', '--', url], idle_timeout=50))
+            self.save_info(url, data)
         fields = ('format_id', 'height', 'fps', 'ext', 'vcodec', 'acodec', 'filesize', 'filesize_approx',
                   'tbr', 'abr', 'language_preference', 'has_drm')
         return {'videoId': data['id'], 'title': data.get('title', 'YouTube видео'),
@@ -218,9 +281,10 @@ class Host:
         folder.mkdir(parents=True, exist_ok=True)
         if save_as and sys.platform == 'darwin':
             self.emit({'type': 'progress', 'update': {'status': 'Выберите место сохранения…'}})
-            script = 'on run argv\nreturn POSIX path of (choose file name with prompt "Сохранить видео YouTube" default name (item 1 of argv) default location (path to downloads folder))\nend run'
+            prompt = 'Сохранить видео YouTube' if self.language == 'ru' else 'Save YouTube video'
+            script = 'on run argv\nreturn POSIX path of (choose file name with prompt (item 2 of argv) default name (item 1 of argv) default location (path to downloads folder))\nend run'
             try:
-                path = self.run(['/usr/bin/osascript', '-e', script, filename]).strip()
+                path = self.run(['/usr/bin/osascript', '-e', script, filename, prompt]).strip()
             except HostError as error:
                 if '-128' in str(error):
                     raise HostError('Сохранение отменено.', 'CANCELED') from error
@@ -273,16 +337,35 @@ class Host:
                 downloaded = sum(received.values())
                 total = max(expected, sum(totals.values()))
                 highest = max(highest, min(95, downloaded / total * 95 if total else 1))
-                self.emit({'type': 'progress', 'update': {'status': 'Скачиваем YouTube…', 'downloaded': downloaded, 'progress': highest}})
+                self.emit({'type': 'progress', 'update': {'status': 'Скачиваем YouTube…', 'downloaded': downloaded,
+                           'progress': highest, 'speed': data.get('speed') or 0, 'eta': data.get('eta')}})
             elif line.startswith('FRAME_POST:'):
-                self.emit({'type': 'progress', 'update': {'status': 'Собираем MP4…', 'progress': max(highest, 96)}})
+                self.emit({'type': 'progress', 'update': {'status': 'Собираем MP4…', 'progress': max(highest, 96), 'speed': 0, 'eta': None}})
+            elif line.startswith('[youtube'):
+                status = 'YouTube: обрабатываем плеер…' if any(part in line for part in ('player', 'challenge', 'JavaScript')) else 'YouTube: получаем данные ролика…'
+                self.emit({'type': 'progress', 'update': {'status': status}})
+            elif line.startswith('[download]') and ('Retry' in line or 'retry' in line):
+                self.emit({'type': 'progress', 'update': {'status': 'YouTube: повторяем соединение…'}})
         with tempfile.TemporaryDirectory(prefix='.frame-', dir=destination.parent) as temporary:
             template = str(Path(temporary)).replace('%', '%%') + '/video.%(ext)s'
-            progress_template = 'download:FRAME_PROGRESS:{"formatId":%(info.format_id)j,"downloaded":%(progress.downloaded_bytes|0)j,"total":%(progress.total_bytes,progress.total_bytes_estimate|0)j}'
-            self.run(command + ['--format', selector, '--merge-output-format', 'mp4', '--remux-video', 'mp4',
-                                '--output', template, '--no-simulate', '--newline', '--progress', '--progress-delta', '0.3',
+            progress_template = 'download:FRAME_PROGRESS:{"formatId":%(info.format_id)j,"downloaded":%(progress.downloaded_bytes|0)j,"total":%(progress.total_bytes,progress.total_bytes_estimate|0)j,"speed":%(progress.speed|0)j,"eta":%(progress.eta|0)j}'
+            data = self.cached_info(url)
+            source = ['--', url]
+            if data is not None:
+                cached = Path(temporary) / 'source.json'
+                cached.write_text(json.dumps(data), encoding='utf-8')
+                source = ['--load-info-json', str(cached)]
+                self.emit({'type': 'progress', 'update': {'status': 'Подключаемся к видеосерверу YouTube…'}})
+            try:
+                self.run(command + ['--format', selector, '--merge-output-format', 'mp4', '--remux-video', 'mp4',
+                                '--output', template, '--no-simulate', '--no-quiet', '--newline', '--progress', '--progress-delta', '0.3',
+                                '--concurrent-fragments', '4',
                                 '--progress-template', progress_template, '--progress-template', 'postprocess:FRAME_POST:%(progress.status)s',
-                                '--print', 'after_move:FRAME_FILE:%(filepath)j', '--', url], progress)
+                                '--print', 'after_move:FRAME_FILE:%(filepath)j', *source], progress, idle_timeout=120)
+            except HostError:
+                # A failed cached URL must be extracted again on retry.
+                self.cache_path(url).unlink(missing_ok=True)
+                raise
             if self.canceled.is_set():
                 raise HostError('Загрузка отменена.', 'CANCELED')
             if not completed_file or not completed_file.is_file() or completed_file.resolve().parent != Path(temporary).resolve():
@@ -308,10 +391,11 @@ class Host:
 
     def handle(self, message):
         try:
+            self.language = 'ru' if message.get('language') == 'ru' else 'en'
             action = message.get('action')
             if action == 'ping':
                 programs = dependencies(self.config)
-                result = {'version': '0.1.0', 'ytdlpVersion': self.run([programs['yt-dlp'], '--version']).strip()}
+                result = {'version': '0.1.0', 'ytdlpVersion': self.run([programs['yt-dlp'], '--version'], idle_timeout=10).strip()}
             elif action == 'info':
                 result = self.info(message)
             elif action == 'download':
@@ -362,7 +446,7 @@ def main():
             if message.get('action') == 'cancel':
                 host.cancel()
             elif host.thread and host.thread.is_alive():
-                send({'type': 'error', 'code': 'BUSY', 'message': 'Помощник занят.'})
+                send({'type': 'error', 'code': 'BUSY', 'message': 'frame-helper занят.'})
             else:
                 host.canceled.clear()
                 host.thread = threading.Thread(target=host.handle, args=(message,), daemon=True)

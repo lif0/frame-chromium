@@ -1,3 +1,4 @@
+import { getLanguage } from './i18n.js';
 export const NATIVE_HOST = 'com.frame.downloader';
 
 export function nativeRequest(message, { signal, onProgress = () => {} } = {}) {
@@ -16,9 +17,10 @@ export function nativeRequest(message, { signal, onProgress = () => {} } = {}) {
       signal?.throwIfAborted();
       port = chrome.runtime.connectNative(NATIVE_HOST);
       port.onMessage.addListener(data => {
+        if (signal?.aborted) return finish(signal.reason);
         if (data.type === 'progress') onProgress(data.update);
         else if (data.type === 'result') finish(null, data.result);
-        else if (data.type === 'error') finish(Object.assign(new Error(data.message || 'Помощник не смог выполнить запрос.'), { code: data.code }));
+        else if (data.type === 'error') finish(Object.assign(new Error(data.message || 'frame-helper не смог выполнить запрос.'), { code: data.code }));
       });
       port.onDisconnect.addListener(() => {
         const detail = chrome.runtime.lastError?.message || '';
@@ -27,11 +29,11 @@ export function nativeRequest(message, { signal, onProgress = () => {} } = {}) {
         const missing = /not found|not registered|not specified/i.test(detail);
         const forbidden = /forbidden/i.test(detail);
         const code = missing ? 'HELPER_MISSING' : forbidden ? 'HELPER_FORBIDDEN' : 'HELPER_DISCONNECTED';
-        const message = missing ? 'Помощник не найден.' : forbidden ? 'Помощник не подключён к этому расширению. Повторите установку с указанным ID.' : 'Помощник не запустился или отключился. Повторите установку и проверку.';
+        const message = missing ? 'frame-helper не найден.' : forbidden ? 'frame-helper не подключён к этому расширению. Повторите установку с указанным ID.' : 'frame-helper не запустился или отключился. Повторите установку и проверку.';
         finish(Object.assign(new Error(message), { code }));
       });
       signal?.addEventListener('abort', cancel, { once: true });
-      port.postMessage(message);
+      port.postMessage({ ...message, language: getLanguage() });
     } catch (error) { finish(error); }
   });
 }

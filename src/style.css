@@ -116,3 +116,13 @@ footer { margin-top: 12px; color: var(--muted); font-size: 10px; }
 @keyframes shimmer { to { background-position: -170% 0; } }
 @keyframes reveal { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
 @media (prefers-reduced-motion: reduce) { .skeleton-card, .results.reveal #videos, .results.reveal #empty { animation: none; } }
+.header-actions { display: flex; gap: 10px; align-items: center; }
+.settings-menu { position: relative; z-index: 5; }
+.settings-menu > summary { cursor: pointer; list-style: none; width: 32px; height: 32px; }
+.settings-menu > summary::-webkit-details-marker { display: none; }
+.settings-panel { position: absolute; top: 40px; right: 0; width: 244px; padding: 16px; background: var(--panel); border: 1px solid var(--line); border-radius: 11px; box-shadow: 0 8px 28px #18392320; }
+.settings-panel h2 { margin: 0 0 14px; font-size: 14px; }
+.settings-panel label { display: block; margin-bottom: 6px; font-size: 12px; }
+.settings-panel select { width: 100%; padding: 9px; border: 1px solid var(--line); border-radius: 7px; background: var(--bg); color: var(--text); }
+.settings-panel p { font-size: 11px; color: var(--muted); margin-bottom: 0; }
+.settings-panel .settings-error { color: #a83b32; }
