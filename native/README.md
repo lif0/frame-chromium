@@ -101,4 +101,14 @@ For official offline viewing, we recommend [YouTube Premium](https://www.youtube
 - Commands use argument arrays, not a shell. The frame-helper ignores the user's yt-dlp config and accepts only individual YouTube video URLs.
 - Dependency paths are captured during installation, so Chrome does not need to inherit your shell's PATH. Rerun the installer after moving dependencies or updating frame-helper source files.
 
-To uninstall, remove the native-host registrations listed for your OS and the frame-helper directory. Saved videos are separate and remain in place. The extension can still download HLS and direct files.
+## Uninstall frame-helper
+
+On macOS, stop active Frame downloads and run from the project root:
+
+```bash
+bash native/uninstall-macos.sh
+```
+
+This removes frame-helper and its registrations for Chrome, Chromium, and `Chrome-Video-Debug`. For another custom browser data directory, add `--user-data-dir "/absolute/path"`. The extension, saved videos, and installed dependencies are preserved. Running the script again is safe.
+
+On Linux and Windows, remove the native-host registrations listed above and the frame-helper directory. The extension can still download HLS and direct files.
