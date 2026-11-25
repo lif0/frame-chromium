@@ -6,11 +6,20 @@ import { nativeRequest } from './native.js';
 
 async function direct(job, { signal, onUpdate }) {
   signal.throwIfAborted();
-  const id = await chrome.downloads.download({ url: job.url, filename: job.filename, saveAs: true });
+  let id;
+  try { id = await chrome.downloads.download({ url: job.url, filename: job.filename, saveAs: true }); }
+  catch (error) {
+    if (/user cancel(?:ed|led)/i.test(error.message)) error.code = 'CANCELED';
+    throw error;
+  }
   return new Promise((resolve, reject) => {
     let settled = false;
     const cleanup = () => { settled = true; clearInterval(timer); chrome.downloads.onChanged.removeListener(changed); signal.removeEventListener('abort', cancel); };
-    const cancel = () => { chrome.downloads.cancel(id).catch(() => {}); cleanup(); reject(signal.reason); };
+    const cancel = () => {
+      if (settled) return;
+      cleanup();
+      chrome.downloads.cancel(id).catch(() => {}).finally(() => reject(signal.reason));
+    };
     const inspect = async () => {
       if (settled) return;
       try {
@@ -19,7 +28,10 @@ async function direct(job, { signal, onUpdate }) {
         const known = item.totalBytes > 0;
         onUpdate({ status: 'Скачиваем…', downloaded: item.bytesReceived, size: known ? { bytes: item.totalBytes, exact: true } : job.size, progress: known ? item.bytesReceived / item.totalBytes * 100 : 0 });
         if (item.state === 'complete') { cleanup(); resolve({ downloadId: id, bytes: item.fileSize }); }
-        else if (item.state === 'interrupted') { cleanup(); reject(new Error('Сохранение прервано. Повторите загрузку.')); }
+        else if (item.state === 'interrupted') {
+          cleanup();
+          reject(Object.assign(new Error('Сохранение прервано. Повторите загрузку.'), { code: item.error === 'USER_CANCELED' ? 'CANCELED' : item.error }));
+        }
       } catch (e) { cleanup(); reject(e); }
     };
     const changed = delta => { if (delta.id === id) inspect(); };
@@ -69,14 +81,23 @@ export async function downloadJob(job, { signal, fileHandle, onUpdate = () => {}
       const videoFile = await trackToDisk(video, 'video', 'Скачиваем видео…');
       const audioFile = audio ? await trackToDisk(audio, 'audio', 'Скачиваем звук…') : null;
       signal.throwIfAborted();
-      writer = await fileHandle.createWritable();
+      const destination = fileHandle || await dir.getFileHandle('output.mp4', { create: true });
+      writer = await destination.createWritable();
       let highest = 0;
       await remuxFiles(videoFile, audioFile, writer, { signal, duration: video.duration, onProgress: progress => {
         highest = Math.max(highest, progress); onUpdate({ status: 'Собираем MP4…', progress: 78 + highest * 20 });
       } });
       signal.throwIfAborted();
       await writer.close(); writer = null;
-      return { fileHandle, bytes: (await fileHandle.getFile()).size };
+      const file = await destination.getFile();
+      if (fileHandle) return { fileHandle, bytes: file.size };
+      // Some Chromium browsers omit the picker but support OPFS and downloads.
+      // Keep the disk-backed File and its directory alive until the browser finishes copying it.
+      const url = URL.createObjectURL(file);
+      try {
+        onUpdate({ status: 'Сохраняем MP4…', progress: 98 });
+        return await direct({ ...job, url }, { signal, onUpdate: update => onUpdate({ status: 'Сохраняем MP4…', progress: 98 + update.progress / 100 }) });
+      } finally { URL.revokeObjectURL(url); }
     } catch (e) { await writer?.abort().catch(() => {}); throw e; }
     finally { await root.removeEntry(name, { recursive: true }); }
   });

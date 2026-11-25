@@ -64,10 +64,10 @@ class DownloadRow {
     let handle;
     try {
       // The save picker is invoked in the original click's activation context.
-      if (this.job.type === 'hls') handle = await window.showSaveFilePicker({ suggestedName: this.job.filename, types: [{ description: t('MP4 видео'), accept: { 'video/mp4': ['.mp4'] } }] });
+      if (this.job.type === 'hls' && typeof window.showSaveFilePicker === 'function') handle = await window.showSaveFilePicker({ suggestedName: this.job.filename, types: [{ description: t('MP4 видео'), accept: { 'video/mp4': ['.mp4'] } }] });
     } catch (e) {
       this.active = false;
-      if (e.name !== 'AbortError') { this.job.state = 'error'; this.job.error = e.message; this.persist(true); }
+      if (e.name !== 'AbortError') { this.job.state = 'error'; this.job.status = 'Не удалось скачать'; this.job.error = e.message; this.persist(true); }
       this.render(); return;
     }
     this.controller = new AbortController(); this.el('.cancel').disabled = false;

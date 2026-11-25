@@ -1,5 +1,6 @@
 // Russian source messages are stable keys, including statuses stored by older jobs.
 export const english = {
+  'Сохраняем MP4…': 'Saving MP4…',
   'Получаем качество…': 'Fetching quality…',
   'Видео найдено. Получаем варианты качества…': 'Video found. Fetching quality options…',
   'Качество недоступно': 'Quality unavailable',
