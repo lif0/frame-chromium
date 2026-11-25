@@ -26,6 +26,30 @@ export function candidateList(candidates) {
   // A master on an advertising CDN must not hide a film on another CDN.
   return [...new Map(streams.filter(v => masters.has(v.url) || !groups.has(mediaScope(v.url))).map(v => [v.url, v])).values()];
 }
+// Different master URLs can resolve to the exact same video/audio playlists.
+// Keep the latest access context, and never merge on duration or quality alone.
+export function uniquePlaylists(items) {
+  const keys = new Map(), result = [];
+  const sameSource = (a, b) => {
+    if (a === b) return true;
+    try {
+      const left = new URL(a), right = new URL(b);
+      // Cross-origin Referer is often reduced to the origin by the browser.
+      const originOnly = url => url.pathname === '/' && !url.search && !url.hash;
+      return left.origin === right.origin && (originOnly(left) || originOnly(right));
+    } catch { return false; }
+  };
+  for (const item of items) {
+    if (item.video.type !== 'hls') { result.push(item); continue; }
+    const tracks = item.options.map(v => JSON.stringify([v.url, v.audio || ''])).sort();
+    const key = JSON.stringify(tracks);
+    keys.set(item, key);
+    const index = result.findIndex(previous => keys.get(previous) === key && sameSource(previous.video.source || '', item.video.source || ''));
+    if (index < 0) result.push(item);
+    else result[index] = item;
+  }
+  return result;
+}
 export function captureContext(url, headers = []) {
   const selected = {};
   let source = '', origin = '';

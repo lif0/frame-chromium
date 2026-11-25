@@ -48,6 +48,8 @@ export function translateMessage(value = '') {
   source = reverse.get(source) || source;
   const http = source.match(/^Сервер вернул HTTP (\d+)\.$/);
   if (http) return t('Сервер вернул HTTP {status}.', { status: http[1] });
+  const exitCode = source.match(/^yt-dlp завершился с ошибкой \(код (-?\d+)\)\.$/);
+  if (exitCode) return t('yt-dlp завершился с ошибкой (код {code}).', { code: exitCode[1] });
   const missing = source.match(/^Не установлены: (.+)\. Откройте настройку frame-helper\.$/);
   if (missing) return t('Не установлены: {names}. Откройте настройку frame-helper.', { names: missing[1] });
   return t(source);

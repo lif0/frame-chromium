@@ -1,5 +1,10 @@
 // Russian source messages are stable keys, including statuses stored by older jobs.
 export const english = {
+  'Получаем качество…': 'Fetching quality…',
+  'Видео найдено. Получаем варианты качества…': 'Video found. Fetching quality options…',
+  'Качество недоступно': 'Quality unavailable',
+  'Не удалось получить варианты качества. Нажмите «Обновить список», чтобы повторить.': 'Could not fetch quality options. Click Refresh list to try again.',
+  'yt-dlp завершился с ошибкой (код {code}).': 'yt-dlp exited with an error (code {code}).',
   'YouTube не ответил за минуту. Попробуйте ещё раз.': 'YouTube did not respond within a minute. Please try again.',
   'YouTube долго не передаёт данные. Проверьте соединение и повторите попытку.': 'YouTube has stopped responding. Check your connection and try again.',
   'YouTube: обрабатываем плеер…': 'YouTube: processing the player…',

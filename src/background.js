@@ -4,6 +4,7 @@ import { mediaKind, mediaScope, captureContext, isMediaFragment } from './media-
 import { youtubeVideoId, youtubeURL } from './youtube.js';
 import { initLanguage, onLanguageChange } from './i18n.js';
 import { createYouTubeInfoLoader } from './youtube-info.js';
+import { mediaViewKey } from './media-view-cache.js';
 const youtubeInfo = createYouTubeInfoLoader();
 let queue = Promise.resolve();
 function enqueue(fn) { queue = queue.catch(() => {}).then(fn); return queue; }
@@ -66,11 +67,12 @@ chrome.webRequest.onHeadersReceived.addListener(d => {
 }, { urls: ['http://*/*', 'https://*/*'] }, ['responseHeaders']);
 chrome.tabs.onUpdated.addListener((id, change, tab) => {
   if (change.status === 'loading') enqueue(async () => {
-    await chrome.storage.session.remove([`tab:${id}`, `view:${id}`]);
+    await chrome.storage.session.remove([`tab:${id}`, `view:${id}`, mediaViewKey(id)]);
     await setCount(id, 0);
     if (youtubeVideoId(tab?.url)) await foundYouTube(id, tab.url);
   }).catch(() => {});
   else if (change.url) enqueue(async () => {
+    await chrome.storage.session.remove(mediaViewKey(id));
     if (youtubeVideoId(change.url)) return foundYouTube(id, change.url);
     const key = `tab:${id}`, stored = (await chrome.storage.session.get(key))[key] || [];
     if (stored.some(v => v.type === 'youtube')) {
@@ -79,7 +81,7 @@ chrome.tabs.onUpdated.addListener((id, change, tab) => {
     }
   }).catch(() => {});
 });
-chrome.tabs.onRemoved.addListener(id => enqueue(() => chrome.storage.session.remove([`tab:${id}`, `view:${id}`])).catch(() => {}));
+chrome.tabs.onRemoved.addListener(id => enqueue(() => chrome.storage.session.remove([`tab:${id}`, `view:${id}`, mediaViewKey(id)])).catch(() => {}));
 chrome.runtime.onMessage.addListener((message, sender, reply) => {
   if (message.type === 'youtube-page' && sender.tab && youtubeVideoId(sender.url)) {
     enqueue(() => foundYouTube(sender.tab.id, sender.url)).then(() => reply({ ok: true }), () => reply({ ok: false }));

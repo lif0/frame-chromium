@@ -129,7 +129,9 @@ def dependencies(config):
     return found
 
 
-def useful_error(lines):
+def useful_error(lines, exit_code=None):
+    # yt-dlp can put the reason on the next line, or end retries with a bare ERROR:.
+    lines = [re.sub(r'\x1b\[[0-?]*[ -/]*[@-~]', '', line).strip() for line in lines]
     text = '\n'.join(lines)[-4000:]
     if 'Sign in to confirm' in text or 'not a bot' in text:
         return 'YouTube запросил проверку входа или проверку «не робот». Автоматическая загрузка этого ролика сейчас недоступна.'
@@ -137,8 +139,30 @@ def useful_error(lines):
         return 'Выбранное качество больше недоступно. Обновите список и выберите качество заново.'
     if 'Private video' in text or 'members-only' in text or 'DRM' in text:
         return 'Этот ролик закрыт или защищён. frame-helper не получил доступ к скачиванию.'
-    errors = [line for line in lines if 'ERROR:' in line]
-    return re.sub(r'https?://\S+', '[адрес]', (errors[-1] if errors else text or 'yt-dlp завершился с ошибкой.'))[:700]
+    detail = ''
+    for index in reversed(range(len(lines))):
+        if 'ERROR:' not in lines[index]:
+            continue
+        parts = [lines[index].split('ERROR:', 1)[1].strip()]
+        for line in lines[index + 1:]:
+            if re.match(r'(?:\[(?!Errno\b)|FRAME_|ERROR:|WARNING:)', line):
+                break
+            if line:
+                parts.append(line)
+        detail = '\n'.join(part for part in parts if part)
+        if detail:
+            break
+    if not detail:
+        reasons = [line for line in lines if re.search(r'(?i)(?:got error:|warning:|exception|timed? out|HTTP Error|unable to|failed to)', line)
+                   and not line.startswith('FRAME_')]
+        detail = reasons[-1] if reasons else ''
+    if not detail:
+        return f'yt-dlp завершился с ошибкой (код {exit_code}).' if exit_code is not None else 'yt-dlp завершился с ошибкой.'
+    # Never expose signed URLs, access headers, or personal home-directory paths.
+    detail = re.sub(r'https?://\S+', '[адрес]', detail)
+    detail = re.sub(r'(?im)\b(?:cookie|set-cookie|authorization|proxy-authorization)\s*[:=][^\n]*', '[скрыто]', detail)
+    detail = re.sub(r'(?:/(?:Users|home)/[^\s\"\']+|[A-Za-z]:\\Users\\[^\r\n\"\']+)', '[путь]', detail)
+    return detail[:700]
 
 
 class Host:
@@ -207,7 +231,7 @@ class Host:
             if timed_out.is_set():
                 raise HostError('YouTube долго не передаёт данные. Проверьте соединение и повторите попытку.', 'TIMEOUT')
             if code:
-                raise HostError(useful_error(lines))
+                raise HostError(useful_error(lines, code))
             return '\n'.join(collected)
         finally:
             finished.set()
@@ -243,7 +267,7 @@ class Host:
     def cached_info(self, url):
         path = self.cache_path(url)
         try:
-            if not 0 <= time.time() - path.stat().st_mtime < 120:
+            if not 0 <= time.time() - path.stat().st_mtime < 600:
                 return None
             data = json.loads(path.read_text(encoding='utf-8'))
             return data if data.get('id') == url.split('v=')[1] else None

@@ -10,7 +10,9 @@ test('YouTube lookup shares in-flight work, caches success, and refreshes explic
   finish({ videoId: 'azblHVbIgF0' }); await first;
   await loader(url); assert.equal(calls, 1);
   const refreshed = loader(url, true); assert.equal(calls, 2); finish({}); await refreshed;
-  time = 120001;
+  time = 599999;
+  await loader(url); assert.equal(calls, 2);
+  time = 600000;
   const expired = loader(url); assert.equal(calls, 3); finish({}); await expired;
 });
 test('YouTube lookup does not cache failures', async () => {

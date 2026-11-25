@@ -21,6 +21,7 @@ test('saved language overrides browser language, persists, and updates other ope
     assert.equal(i18n.translateMessage('Собираем MP4…'), 'Merging MP4…');
     assert.equal(i18n.translateMessage('Не установлены: ffmpeg, deno. Откройте настройку помощника.'), 'Missing dependencies: ffmpeg, deno. Open frame-helper setup.');
     assert.equal(i18n.translateMessage('Сервер вернул HTTP 503.'), 'The server returned HTTP 503.');
+    assert.equal(i18n.translateMessage('yt-dlp завершился с ошибкой (код 1).'), 'yt-dlp exited with an error (code 1).');
     handlers[0]({ language: { newValue: 'ru' } }, 'local');
     assert.equal(i18n.translateMessage('Собираем MP4…'), 'Собираем MP4…');
     assert.deepEqual(updates, ['en', 'ru']);

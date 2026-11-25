@@ -4,7 +4,8 @@ import { BUILD_VERSION, requireManagerResponse } from './messages.js';
 import { safeFilename } from './hls.js';
 import { playlist, request, timeLabel } from './network.js';
 import { estimateSize, sizeLabel } from './size.js';
-import { candidateList } from './media-context.js';
+import { candidateList, uniquePlaylists } from './media-context.js';
+import { mediaViewKey, mediaViewSignature, cachedMediaView } from './media-view-cache.js';
 import { collectPreviews, matchingPreview } from './previews.js';
 import { candidateSignature } from './badge.js';
 import { previewFrame } from './preview-frame.js';
@@ -23,7 +24,7 @@ function setPreview(root, image) {
   thumbnail.src = image;
 }
 async function measure(video, variant) {
-  if (video.type === 'youtube') return variant.size;
+  if (video.type === 'youtube' || variant.size) return variant.size;
   const key = [variant.url, variant.audio || '', video.source || '', JSON.stringify(video.access || {})].join('|');
   if (!sizeCache.has(key)) sizeCache.set(key, (async () => {
     if (video.type === 'file') {
@@ -37,7 +38,7 @@ async function measure(video, variant) {
   })().catch(() => { sizeCache.delete(key); return { bytes: null, exact: false }; }));
   return sizeCache.get(key);
 }
-function card(video, title, options, siteUrl, duration, image = '', target = $('#videos')) {
+function card(video, title, options, siteUrl, duration, image = '', target = $('#videos'), onChange = () => {}) {
   const fragment = $('#video-template').content.cloneNode(true);
   const root = fragment.querySelector('article');
   root.querySelector('.video-title').textContent = title;
@@ -48,6 +49,18 @@ function card(video, title, options, siteUrl, duration, image = '', target = $('
   const durationElement = root.querySelector('.duration');
   if (duration) durationElement.textContent = timeLabel(duration);
   const select = root.querySelector('select');
+  if (!options.length) {
+    const option = document.createElement('option');
+    option.textContent = t('Получаем качество…'); select.append(option); select.disabled = true;
+    root.querySelector('.download').disabled = true;
+    root.querySelector('.download-size').textContent = '';
+    const status = document.createElement('p');
+    status.className = 'video-status muted'; status.setAttribute('role', 'status');
+    status.textContent = t('Видео найдено. Получаем варианты качества…'); root.append(status);
+    root.querySelector('.video-controls').setAttribute('aria-busy', 'true');
+    target.append(fragment);
+    return root;
+  }
   for (const [i, v] of options.entries()) {
     const option = document.createElement('option'); option.value = i;
     option.textContent = v.height ? `${v.height}p${v.height >= 2160 ? ' · 4K' : v.height >= 1440 ? ' · QHD' : v.height >= 1080 ? ' · Full HD' : v.height >= 720 ? ' · HD' : ''}` : t('Качество неизвестно'); select.append(option);
@@ -60,10 +73,12 @@ function card(video, title, options, siteUrl, duration, image = '', target = $('
     currentSize = null; root.querySelector('.download-size').textContent = t('Считаем…');
     const size = preview ? { bytes: variant.height * 37000, exact: true, duration: duration || 68 } : await measure(video, variant);
     if (version !== revision || !root.isConnected) return;
+    variant.size = size;
     currentSize = size;
     root.querySelector('.download-size').textContent = sizeLabel(size);
     root.querySelector('.download-size').title = size.exact ? t('Объём загружаемых дорожек; итоговый файл может немного отличаться') : t('Оценка по длительности и битрейту');
     if (size.duration) durationElement.textContent = timeLabel(size.duration);
+    onChange();
   };
   select.addEventListener('change', () => { update(); if (!preview) chrome.storage.local.set({ preferred: options[select.value].height }).catch(() => {}); });
   root.querySelector('.download').addEventListener('click', async event => {
@@ -103,12 +118,27 @@ async function refresh(force = false) {
     $('#youtube-note').hidden = !youtubeVideoId(tab?.url);
     $('#site').textContent = tab?.url?.startsWith('http') ? new URL(tab.url).hostname : t('Откройте страницу с видео');
     if (!tab?.id) { $('#videos').replaceChildren(); $('#count').textContent = '0'; $('#empty').hidden = false; return; }
-    await chrome.scripting.executeScript({ target: { tabId: tab.id, allFrames: true }, files: ['detect.js'] }).catch(() => {});
     const youtubeId = youtubeVideoId(tab.url);
     if (youtubeId) {
       $('#videos').replaceChildren(); $('#empty').hidden = true; $('#count').textContent = '1';
+      const video = { type: 'youtube', url: youtubeURL(youtubeId), source: youtubeURL(youtubeId), videoId: youtubeId };
+      const pendingCard = card(video, tab.title || t('Видео'), [], video.url, 0, `https://i.ytimg.com/vi/${youtubeId}/hqdefault.jpg`);
+      $('#loading').hidden = true;
+      $('#results').setAttribute('aria-busy', 'false');
+      let pageInfo;
+      // Page metadata enriches the card independently; neither request waits for the other.
+      chrome.scripting.executeScript({ target: { tabId: tab.id }, world: 'MAIN', func: youtubePageInfo }).then(results => {
+        const info = results[0]?.result;
+        if (current !== generation || !pendingCard.isConnected || info?.videoId !== youtubeId) return;
+        pageInfo = info;
+        if (info.title) {
+          pendingCard.querySelector('.video-title').textContent = info.title;
+          pendingCard.querySelector('.video-title').title = info.title;
+        }
+        if (info.duration) pendingCard.querySelector('.duration').textContent = timeLabel(info.duration);
+        setPreview(pendingCard, info.thumbnail);
+      }).catch(() => {});
       try {
-        const pageInfo = await chrome.scripting.executeScript({ target: { tabId: tab.id }, world: 'MAIN', func: youtubePageInfo }).then(r => r[0]?.result).catch(() => null);
         const response = await chrome.runtime.sendMessage({ type: 'youtube-info', url: youtubeURL(youtubeId), refresh: force === true });
         if (response.error) throw Object.assign(new Error(response.error), { code: response.code });
         const info = response.info;
@@ -116,19 +146,30 @@ async function refresh(force = false) {
         if (info.videoId !== youtubeId) throw new Error('Плеер переключился на другой ролик. Обновите список.');
         const options = youtubeOptions(info);
         if (!options.length) throw new Error('Для этого ролика не найдено доступных форматов скачивания.');
-        card({ type: 'youtube', url: youtubeURL(youtubeId), source: youtubeURL(youtubeId), videoId: youtubeId }, info.title || pageInfo?.title || tab.title, options, youtubeURL(youtubeId), info.duration || pageInfo?.duration, info.thumbnail || pageInfo?.thumbnail);
+        $('#videos').replaceChildren();
+        card(video, info.title || pageInfo?.title || tab.title, options, video.url, info.duration || pageInfo?.duration, info.thumbnail || pageInfo?.thumbnail);
       } catch (error) {
+        pendingCard.querySelector('.video-controls').setAttribute('aria-busy', 'false');
+        pendingCard.querySelector('option').textContent = t('Качество недоступно');
+        pendingCard.querySelector('.video-status').textContent = t('Не удалось получить варианты качества. Нажмите «Обновить список», чтобы повторить.');
         notice(error.code === 'HELPER_MISSING' ? `${translateMessage(error.message)} ${t('Для скачивания с YouTube установите frame-helper и зависимости.')}` : error.message);
         $('#helper-setup').hidden = !['HELPER_MISSING', 'HELPER_FORBIDDEN', 'DEPENDENCY_MISSING', 'HELPER_DISCONNECTED'].includes(error.code);
       }
       await updateActiveCount(); return;
     }
-    const previewsPromise = chrome.scripting.executeScript({ target: { tabId: tab.id, allFrames: true }, func: collectPreviews })
+    // Slow-loading iframes must not hold up candidates already observed by the worker.
+    chrome.scripting.executeScript({ target: { tabId: tab.id, allFrames: true }, files: ['detect.js'], injectImmediately: true }).catch(() => {});
+    const previewsPromise = chrome.scripting.executeScript({ target: { tabId: tab.id, allFrames: true }, func: collectPreviews, injectImmediately: true })
       .then(frames => frames.flatMap(frame => frame.result || [])).catch(() => []);
-    const candidates = (await chrome.storage.session.get(`tab:${tab.id}`))[`tab:${tab.id}`] || [];
+    const cacheKey = mediaViewKey(tab.id);
+    const saved = await chrome.storage.session.get([`tab:${tab.id}`, cacheKey]);
+    const candidates = saved[`tab:${tab.id}`] || [];
+    const signature = mediaViewSignature(candidates);
+    const cached = force === true ? null : cachedMediaView(saved[cacheKey], tab.url, signature, Date.now());
+    if (!cached) { sizeCache.clear(); await chrome.storage.session.remove(cacheKey); }
     const unique = candidateList(candidates), prepared = [], children = new Set();
     let lastError;
-    for (const v of unique) {
+    for (const v of cached ? [] : unique) {
       try {
         let options = [{ url: v.url, height: 0 }], duration;
         if (v.type === 'hls') {
@@ -144,14 +185,29 @@ async function refresh(force = false) {
         prepared.push({ video: v, options, duration });
       } catch (e) { lastError = e.message; }
     }
-    const visible = prepared.filter(item => !children.has(item.video.url)).sort((a, b) => (b.duration || 0) - (a.duration || 0));
-    const previews = await previewsPromise, fragment = document.createDocumentFragment();
-    const rows = visible.map(({video, options, duration}, index) => {
-      const image = matchingPreview(video, duration, previews);
-      const root = card(video, tab.title || t('Видео'), options, tab.url, duration, image, fragment);
+    const visible = cached || uniquePlaylists(prepared.filter(item => !children.has(item.video.url))).sort((a, b) => (b.duration || 0) - (a.duration || 0));
+    const cacheTime = cached ? saved[cacheKey].time : Date.now();
+    const saveView = () => {
+      if (current !== generation || lastError) return;
+      const items = rows.filter(row => row.root.isConnected).map(({video, options, duration, image}) => ({video, options, duration, image}));
+      if (items.length) chrome.storage.session.set({ [cacheKey]: { url: tab.url, signature, time: cacheTime, items } }).catch(() => {});
+    };
+    const fragment = document.createDocumentFragment();
+    const rows = visible.map(({video, options, duration, image = ''}, index) => {
+      const root = card(video, tab.title || t('Видео'), options, tab.url, duration, image, fragment, saveView);
       return {video, options, duration, image, root, index};
     });
     $('#videos').replaceChildren(fragment);
+    saveView();
+    previewsPromise.then(previews => {
+      if (current !== generation) return;
+      for (const row of rows) {
+        if (!row.root.isConnected) continue;
+        const image = matchingPreview(row.video, row.duration, previews);
+        if (image) { row.image = image; setPreview(row.root, image); }
+      }
+      saveView();
+    });
     const count = visible.length;
     if (!count && lastError) notice(lastError);
     $('#count').textContent = count; $('#empty').hidden = count > 0;
@@ -161,13 +217,14 @@ async function refresh(force = false) {
       $('#count').textContent = count;
       chrome.runtime.sendMessage({ type: 'visible-videos', tabId: tab.id, signature: candidateSignature(candidates), count }).catch(() => {});
     };
-    for (const row of rows) {
-      const {video, options, duration, image, root} = row;
+    for (const row of cached ? [] : rows) {
+      const {video, options, duration, root} = row;
       const similar = rows.filter(r => r.video.source === video.source && r.duration === duration && r.options.length === 1 && options.length === 1 && r.options[0].height === options[0].height);
-      if (image && similar.length < 2) continue;
+      if (row.image && similar.length < 2) continue;
       previewFrame(video, options.at(-1)).then(result => {
         if (!root.isConnected || !result) return;
-        setPreview(root, image || result.image);
+        row.image ||= result.image;
+        setPreview(root, row.image || result.image);
         row.fingerprint = result.fingerprint;
         // Only collapse single-quality alternatives after matching actual media
         // bytes as well as player, duration and quality. Keep the newest URL.
@@ -175,6 +232,7 @@ async function refresh(force = false) {
         const newest = duplicates.sort((a, b) => b.index - a.index)[0];
         for (const duplicate of duplicates) if (duplicate !== newest) duplicate.root.remove();
         syncCount();
+        saveView();
       }).catch(() => {});
     }
     await updateActiveCount();
